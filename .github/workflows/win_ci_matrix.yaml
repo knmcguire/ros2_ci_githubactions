@@ -1,0 +1,323 @@
+name: Windows CI Matrix
+
+on:
+  workflow_dispatch:
+    inputs:
+      ros_distro:
+        description: ROS 2 distribution (matches a branch on ros2/ros2)
+        default: rolling
+        type: string
+      repo_file_url:
+        description: Optional repos file URL (defaults to ros2.repos for selected distro)
+        default: ''
+        type: string
+      ci_args:
+        description: Arguments passed to run_ros2_batch.py
+        default: >-
+          --force-ansi-color
+          --ignore-rmw rmw_fastrtps_dynamic_cpp rmw_connextdds
+          --repo-file-url https://raw.githubusercontent.com/ros2/ros2/rolling/ros2.repos
+          --colcon-mixin-url https://raw.githubusercontent.com/colcon/colcon-mixin-repository/master/index.yaml
+          --cmake-build-type Release
+          --visual-studio-version 2022
+          --build-args --event-handlers console_cohesion+ console_package_list+
+          --cmake-args -DINSTALL_EXAMPLES=OFF -DSECURITY=ON -DAPPEND_PROJECT_NAME_TO_INCLUDEDIR=ON
+          --test-args --event-handlers console_cohesion+
+          --executor sequential
+          --retest-until-pass 2 --ctest-args -LE xfail --pytest-args -m "not xfail"
+        type: string
+
+env:
+  ROS_DISTRO: ${{ inputs.ros_distro || 'rolling' }}
+  CI_ARGS: ${{ inputs.ci_args || '--force-ansi-color --ignore-rmw rmw_fastrtps_dynamic_cpp rmw_connextdds --repo-file-url https://raw.githubusercontent.com/ros2/ros2/rolling/ros2.repos --colcon-mixin-url https://raw.githubusercontent.com/colcon/colcon-mixin-repository/master/index.yaml --cmake-build-type Release --visual-studio-version 2022 --build-args --event-handlers console_cohesion+ console_package_list+ --cmake-args -DINSTALL_EXAMPLES=OFF -DSECURITY=ON -DAPPEND_PROJECT_NAME_TO_INCLUDEDIR=ON --test-args --event-handlers console_cohesion+ --executor sequential --retest-until-pass 2 --ctest-args -LE xfail --pytest-args -m "not xfail"' }}
+  PIXI_VERSION: v0.41.0
+  PIXI_SHA256: 16b1b83f2d6f04a990ef7c6eea2bb45d2e846d122be312ca3f5f1b14be7cdc6d
+
+jobs:
+  generate-matrix:
+    runs-on: windows-2025
+    outputs:
+      matrix: ${{ steps.graph_to_matrix.outputs.matrix }}
+      package_count: ${{ steps.graph_to_matrix.outputs.package_count }}
+
+    steps:
+      - name: Checkout ros2/ci repository
+        uses: actions/checkout@v4
+        with:
+          repository: ros2/ci
+          path: ci
+
+      - name: Install pixi (pinned + checksum verified)
+        shell: powershell
+        run: |
+          $url = "https://github.com/prefix-dev/pixi/releases/download/$env:PIXI_VERSION/pixi-x86_64-pc-windows-msvc.zip"
+          irm $url -OutFile pixi-x86_64-pc-windows-msvc.zip
+          $hash = (Get-FileHash pixi-x86_64-pc-windows-msvc.zip -Algorithm SHA256).Hash
+          if ($hash -ne $env:PIXI_SHA256) {
+            Write-Error "pixi checksum mismatch: got $hash expected $env:PIXI_SHA256"
+            exit 1
+          }
+          $bindir = Join-Path $Env:USERPROFILE ".pixi\bin"
+          Expand-Archive -Path pixi-x86_64-pc-windows-msvc.zip -DestinationPath $bindir -Force
+          Add-Content -Path $env:GITHUB_PATH -Value $bindir
+
+      - name: Fetch pixi.toml for ROS distro
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path C:\pixi_ws | Out-Null
+          $url = "https://raw.githubusercontent.com/ros2/ros2/refs/heads/$env:ROS_DISTRO/pixi.toml"
+          if (-not $url.StartsWith('https://')) { Write-Error 'URL must use HTTPS'; exit 1 }
+          irm $url -OutFile C:\pixi_ws\pixi.toml
+
+      - name: Install pixi dependencies
+        shell: powershell
+        working-directory: C:\pixi_ws
+        run: |
+          pixi --color never --no-progress -q install
+
+      - name: Resolve repos file URL
+        shell: powershell
+        run: |
+          $resolved = '${{ inputs.repo_file_url }}'
+          if ([string]::IsNullOrWhiteSpace($resolved)) {
+            $resolved = "https://raw.githubusercontent.com/ros2/ros2/$env:ROS_DISTRO/ros2.repos"
+          }
+          if (-not $resolved.StartsWith('https://')) {
+            Write-Error "repos URL must use HTTPS: $resolved"
+            exit 1
+          }
+          "REPO_FILE_URL=$resolved" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Using repos URL: $resolved"
+
+      - name: Import repositories for graph
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path C:\graph_ws\src | Out-Null
+          irm $env:REPO_FILE_URL -OutFile C:\graph_ws\ros2.repos
+          Get-Content C:\graph_ws\ros2.repos | pixi run --manifest-path C:\pixi_ws\pixi.toml --frozen vcs import C:\graph_ws\src
+
+      - name: Generate colcon dependency graph
+        shell: powershell
+        run: |
+          pixi run --manifest-path C:\pixi_ws\pixi.toml --frozen colcon graph --base-paths C:\graph_ws\src --dot > C:\graph_ws\graph.dot
+
+      - name: Convert graph to ordered matrix
+        id: graph_to_matrix
+        shell: powershell
+        run: |
+          $graphFile = 'C:\graph_ws\graph.dot'
+          if (-not (Test-Path $graphFile)) {
+            Write-Error "Graph file not found: $graphFile"
+            exit 1
+          }
+
+          $deps = @{}
+          $nodeSet = [System.Collections.Generic.HashSet[string]]::new()
+
+          foreach ($line in Get-Content $graphFile) {
+            if ($line -match '^\s*"([^\"]+)"\s*;$') {
+              $pkg = $matches[1]
+              [void]$nodeSet.Add($pkg)
+              if (-not $deps.ContainsKey($pkg)) { $deps[$pkg] = @() }
+              continue
+            }
+            if ($line -match '^\s*"([^\"]+)"\s*->\s*"([^\"]+)"') {
+              $src = $matches[1]
+              $dst = $matches[2]
+              [void]$nodeSet.Add($src)
+              [void]$nodeSet.Add($dst)
+              if (-not $deps.ContainsKey($src)) { $deps[$src] = @() }
+              if (-not $deps.ContainsKey($dst)) { $deps[$dst] = @() }
+              $deps[$src] += $dst
+            }
+          }
+
+          if ($nodeSet.Count -eq 0) {
+            Write-Error 'No packages found in colcon graph output.'
+            exit 1
+          }
+
+          $memo = @{}
+          function Get-Level([string]$pkg) {
+            if ($memo.ContainsKey($pkg)) {
+              return $memo[$pkg]
+            }
+            $children = @($deps[$pkg] | Sort-Object -Unique)
+            if ($children.Count -eq 0) {
+              $memo[$pkg] = 0
+              return 0
+            }
+            $max = 0
+            foreach ($dep in $children) {
+              $candidate = (Get-Level $dep) + 1
+              if ($candidate -gt $max) {
+                $max = $candidate
+              }
+            }
+            $memo[$pkg] = $max
+            return $max
+          }
+
+          $rows = @()
+          foreach ($pkg in $nodeSet) {
+            $direct = @($deps[$pkg] | Sort-Object -Unique).Count
+            $rows += [pscustomobject]@{
+              package = $pkg
+              level = Get-Level $pkg
+              direct_dependencies = $direct
+            }
+          }
+
+          $ordered = $rows | Sort-Object level, direct_dependencies, package
+          $matrix = [pscustomobject]@{ include = @() }
+          foreach ($item in $ordered) {
+            $matrix.include += [pscustomobject]@{
+              package = $item.package
+              level = $item.level
+              direct_dependencies = $item.direct_dependencies
+            }
+          }
+
+          $json = $matrix | ConvertTo-Json -Compress -Depth 10
+          "matrix=$json" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "package_count=$($ordered.Count)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+          "### Package order from colcon graph" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "Total packages: $($ordered.Count)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          foreach ($item in $ordered) {
+            "- $($item.package) (level=$($item.level), direct_deps=$($item.direct_dependencies))" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          }
+
+  windows-ci-matrix:
+    needs: generate-matrix
+    if: ${{ needs.generate-matrix.outputs.package_count != '0' }}
+    runs-on: windows-2025
+    timeout-minutes: 350
+
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
+
+    env:
+      ROS_DOMAIN_ID: 1
+      WS_PATH: ${{ github.workspace }}\ws
+      PACKAGE_NAME: ${{ matrix.package }}
+
+    steps:
+      - name: Checkout ros2/ci repository
+        uses: actions/checkout@v4
+        with:
+          repository: ros2/ci
+          path: ci
+
+      - name: Enable long paths
+        shell: powershell
+        run: |
+          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' `
+            -Name 'LongPathsEnabled' -Value 1 -PropertyType DWORD -Force
+
+      - name: Install Visual Studio 2022 build tools
+        shell: powershell
+        run: |
+          irm https://aka.ms/vs/17/release/vs_buildtools.exe -OutFile vs_buildtools_2022.exe
+          $vsArgs = @(
+            '--quiet','--wait','--norestart','--nocache',
+            '--installPath','C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools',
+            '--add','Microsoft.Component.MSBuild',
+            '--add','Microsoft.Net.Component.4.6.1.TargetingPack',
+            '--add','Microsoft.Net.Component.4.8.SDK',
+            '--add','Microsoft.VisualStudio.Component.CoreBuildTools',
+            '--add','Microsoft.VisualStudio.Component.Roslyn.Compiler',
+            '--add','Microsoft.VisualStudio.Component.TextTemplating',
+            '--add','Microsoft.VisualStudio.Component.VC.CLI.Support',
+            '--add','Microsoft.VisualStudio.Component.VC.CoreBuildTools',
+            '--add','Microsoft.VisualStudio.Component.VC.CoreIde',
+            '--add','Microsoft.VisualStudio.Component.VC.Redist.14.Latest',
+            '--add','Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
+            '--add','Microsoft.VisualStudio.Component.Windows10SDK',
+            '--add','Microsoft.VisualStudio.Component.Windows10SDK.19041',
+            '--add','Microsoft.VisualStudio.ComponentGroup.NativeDesktop.Core',
+            '--add','Microsoft.VisualStudio.Workload.MSBuildTools',
+            '--add','Microsoft.VisualStudio.Workload.VCTools'
+          )
+          $p = Start-Process -FilePath .\vs_buildtools_2022.exe -ArgumentList $vsArgs -Wait -PassThru -NoNewWindow
+          if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) {
+            Write-Error "VS build tools install failed with exit code $($p.ExitCode)"
+            exit $p.ExitCode
+          }
+
+      - name: Install pixi (pinned + checksum verified)
+        shell: powershell
+        run: |
+          $url = "https://github.com/prefix-dev/pixi/releases/download/$env:PIXI_VERSION/pixi-x86_64-pc-windows-msvc.zip"
+          irm $url -OutFile pixi-x86_64-pc-windows-msvc.zip
+          $hash = (Get-FileHash pixi-x86_64-pc-windows-msvc.zip -Algorithm SHA256).Hash
+          if ($hash -ne $env:PIXI_SHA256) {
+            Write-Error "pixi checksum mismatch: got $hash expected $env:PIXI_SHA256"
+            exit 1
+          }
+          $bindir = Join-Path $Env:USERPROFILE ".pixi\bin"
+          Expand-Archive -Path pixi-x86_64-pc-windows-msvc.zip -DestinationPath $bindir -Force
+          Add-Content -Path $env:GITHUB_PATH -Value $bindir
+
+      - name: Fetch pixi.toml for ROS distro
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path C:\pixi_ws | Out-Null
+          $url = "https://raw.githubusercontent.com/ros2/ros2/refs/heads/$env:ROS_DISTRO/pixi.toml"
+          if (-not $url.StartsWith('https://')) { Write-Error 'URL must use HTTPS'; exit 1 }
+          irm $url -OutFile C:\pixi_ws\pixi.toml
+
+      - name: Install pixi dependencies
+        shell: powershell
+        working-directory: C:\pixi_ws
+        run: |
+          pixi --color never --no-progress -q install
+
+      - name: Ensure colcon-ros-domain-id-coordinator
+        shell: powershell
+        working-directory: C:\pixi_ws
+        run: |
+          pixi --color never --no-progress -q run `
+            "pip install 'colcon-ros-domain-id-coordinator >= 0.2.3'"
+
+      - name: Locate Visual Studio 2022
+        shell: powershell
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) { Write-Error "vswhere.exe not found"; exit 1 }
+          $vsRoot = & $vswhere -products * -version '[17.0,18.0)' -latest -property installationPath
+          if (-not $vsRoot) { Write-Error "No Visual Studio 2022 (17.x) instance found"; exit 1 }
+          $vcvars = Join-Path $vsRoot 'VC\Auxiliary\Build\vcvars64.bat'
+          if (-not (Test-Path $vcvars)) { Write-Error "vcvars64.bat not found under $vsRoot"; exit 1 }
+          "VCVARS64=$vcvars" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          $clHostDir = Get-ChildItem -Path (Join-Path $vsRoot 'VC\Tools\MSVC') -Recurse -Filter cl.exe -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\Hostx64\\x64\\cl.exe$' } |
+            Select-Object -First 1 | ForEach-Object { $_.DirectoryName }
+          if (-not $clHostDir) { Write-Error "Could not find Hostx64\x64 bin dir under $vsRoot"; exit 1 }
+          $junction = 'C:\msvcbin'
+          if (Test-Path $junction) { cmd /c rmdir "$junction" 2>$null }
+          New-Item -ItemType Junction -Path $junction -Target $clHostDir | Out-Null
+          $linkViaJunction = 'C:/msvcbin/link.exe'
+          if (-not (Test-Path $linkViaJunction)) { Write-Error "link.exe not reachable via junction $junction"; exit 1 }
+          "MSVC_LINK=$linkViaJunction" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Run ROS 2 batch job for matrix package
+        shell: cmd
+        run: |
+          call "%VCVARS64%"
+          if errorlevel 1 (
+            echo ERROR: vcvars64.bat failed.
+            exit /b 1
+          )
+          if not defined VisualStudioVersion (
+            echo ERROR: VisualStudioVersion is still not set after sourcing vcvars.
+            exit /b 1
+          )
+          set "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=%MSVC_LINK%"
+          set "PACKAGE_FILTER_ARGS= --build-args --packages-above-and-dependencies %PACKAGE_NAME% --test-args --packages-above %PACKAGE_NAME%"
+          cd /d "%GITHUB_WORKSPACE%\ci"
+          echo Running package: %PACKAGE_NAME%
+          pixi run --manifest-path C:\pixi_ws\pixi.toml --frozen python run_ros2_batch.py %CI_ARGS%%PACKAGE_FILTER_ARGS%
