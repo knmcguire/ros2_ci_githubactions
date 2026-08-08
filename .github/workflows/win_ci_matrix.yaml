@@ -94,7 +94,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path C:\graph_ws\src | Out-Null
           irm $env:REPO_FILE_URL -OutFile C:\graph_ws\ros2.repos
-          Get-Content C:\graph_ws\ros2.repos | pixi run --manifest-path C:\pixi_ws\pixi.toml --frozen vcs import C:\graph_ws\src
+          pixi run --manifest-path C:\pixi_ws\pixi.toml --frozen vcs import --input C:\graph_ws\ros2.repos C:\graph_ws\src
 
       - name: Generate colcon dependency graph
         shell: powershell
