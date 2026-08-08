@@ -10,6 +10,10 @@ on:
         description: ROS 2 distribution (matches a branch on ros2/ros2)
         default: rolling
         type: string
+      package_name:
+        description: Optional package name to scope build/test (for example, rclcpp)
+        default: ''
+        type: string
       ci_args:
         description: Arguments passed to run_ros2_batch.py
         default: >-
@@ -28,6 +32,7 @@ on:
 
 env:
   ROS_DISTRO: ${{ inputs.ros_distro || 'rolling' }}
+  PACKAGE_NAME: ${{ inputs.package_name || '' }}
   PIXI_VERSION: v0.41.0
   PIXI_SHA256: 16b1b83f2d6f04a990ef7c6eea2bb45d2e846d122be312ca3f5f1b14be7cdc6d
 
@@ -177,4 +182,8 @@ jobs:
           echo MSVC_LINK=%MSVC_LINK%
           set "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=%MSVC_LINK%"
           cd /d "%GITHUB_WORKSPACE%\ci"
-          pixi run --manifest-path C:\pixi_ws\pixi.toml --frozen python run_ros2_batch.py %CI_ARGS%
+          set "PACKAGE_FILTER_ARGS="
+          if not "%PACKAGE_NAME%"=="" (
+            set "PACKAGE_FILTER_ARGS= --build-args --packages-above-and-dependencies %PACKAGE_NAME% --test-args --packages-above %PACKAGE_NAME%"
+          )
+          pixi run --manifest-path C:\pixi_ws\pixi.toml --frozen python run_ros2_batch.py %CI_ARGS%%PACKAGE_FILTER_ARGS%
