@@ -1,5 +1,9 @@
 name: Windows CI Matrix
 
+permissions:
+  contents: read
+  actions: write
+
 on:
   workflow_dispatch:
     inputs:
@@ -22,6 +26,10 @@ on:
       max_parallel:
         description: Maximum number of matrix jobs to run in parallel
         default: '40'
+        type: string
+      auto_chain_next_shard:
+        description: When true, shard 1 automatically triggers shard 2 after success
+        default: 'false'
         type: string
       ci_args:
         description: Arguments passed to run_ros2_batch.py
@@ -401,3 +409,33 @@ jobs:
           cd /d "%GITHUB_WORKSPACE%\ci"
           echo Running package: %PACKAGE_NAME%
           pixi run --manifest-path C:\pixi_ws\pixi.toml --frozen python run_ros2_batch.py %CI_ARGS%%PACKAGE_FILTER_ARGS%
+
+  dispatch-next-shard:
+    needs: windows-ci-matrix
+    if: ${{ success() && inputs.auto_chain_next_shard == 'true' && inputs.shard_index == '1' && inputs.shard_count == '2' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Dispatch shard 2 run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          cat > payload.json <<'JSON'
+          {
+            "ref": "${{ github.ref_name }}",
+            "inputs": {
+              "ros_distro": ${{ toJson(inputs.ros_distro) }},
+              "repo_file_url": ${{ toJson(inputs.repo_file_url) }},
+              "shard_index": "2",
+              "shard_count": ${{ toJson(inputs.shard_count) }},
+              "max_parallel": ${{ toJson(inputs.max_parallel) }},
+              "auto_chain_next_shard": "false",
+              "ci_args": ${{ toJson(inputs.ci_args) }}
+            }
+          }
+          JSON
+          gh api \
+            --method POST \
+            repos/${{ github.repository }}/actions/workflows/win_ci_matrix.yaml/dispatches \
+            --input payload.json
