@@ -11,6 +11,14 @@ on:
         description: Optional repos file URL (defaults to ros2.repos for selected distro)
         default: ''
         type: string
+      shard_index:
+        description: 1-based shard index to run (for two runs use 1 then 2)
+        default: '1'
+        type: string
+      shard_count:
+        description: Total number of shards to split ordered packages into
+        default: '2'
+        type: string
       ci_args:
         description: Arguments passed to run_ros2_batch.py
         default: >-
@@ -122,6 +130,29 @@ jobs:
         id: graph_to_matrix
         shell: powershell
         run: |
+          $shardIndexRaw = '${{ inputs.shard_index }}'
+          $shardCountRaw = '${{ inputs.shard_count }}'
+          $parsedShardIndex = 0
+          $parsedShardCount = 0
+          if (-not [int]::TryParse($shardIndexRaw, [ref]$parsedShardIndex)) {
+            Write-Error "shard_index must be an integer, got: $shardIndexRaw"
+            exit 1
+          }
+          if (-not [int]::TryParse($shardCountRaw, [ref]$parsedShardCount)) {
+            Write-Error "shard_count must be an integer, got: $shardCountRaw"
+            exit 1
+          }
+          $shardIndex = $parsedShardIndex
+          $shardCount = $parsedShardCount
+          if ($shardCount -lt 1) {
+            Write-Error "shard_count must be >= 1, got: $shardCount"
+            exit 1
+          }
+          if ($shardIndex -lt 1 -or $shardIndex -gt $shardCount) {
+            Write-Error "shard_index must be between 1 and shard_count ($shardCount), got: $shardIndex"
+            exit 1
+          }
+
           $graphFile = 'C:\graph_ws\graph.dot'
           if (-not (Test-Path $graphFile)) {
             Write-Host 'Contents of C:\graph_ws for debugging:'
@@ -188,8 +219,31 @@ jobs:
           }
 
           $ordered = $rows | Sort-Object level, direct_dependencies, package
+
+          $totalCount = $ordered.Count
+          $baseSize = [math]::Floor($totalCount / $shardCount)
+          $remainder = $totalCount % $shardCount
+          if ($shardIndex -le $remainder) {
+            $sliceSize = $baseSize + 1
+            $start = ($shardIndex - 1) * ($baseSize + 1)
+          } else {
+            $sliceSize = $baseSize
+            $start = ($remainder * ($baseSize + 1)) + (($shardIndex - $remainder - 1) * $baseSize)
+          }
+
+          if ($sliceSize -eq 0) {
+            $selected = @()
+          } else {
+            $selected = @($ordered | Select-Object -Skip $start -First $sliceSize)
+          }
+
+          if ($selected.Count -gt 256) {
+            Write-Error "Selected shard has $($selected.Count) packages, exceeding GitHub matrix limit (256). Increase shard_count."
+            exit 1
+          }
+
           $matrix = [pscustomobject]@{ include = @() }
-          foreach ($item in $ordered) {
+          foreach ($item in $selected) {
             $matrix.include += [pscustomobject]@{
               package = $item.package
               level = $item.level
@@ -199,11 +253,14 @@ jobs:
 
           $json = $matrix | ConvertTo-Json -Compress -Depth 10
           "matrix=$json" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "package_count=$($ordered.Count)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "package_count=$($selected.Count)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
           "### Package order from colcon graph" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "Total packages: $($ordered.Count)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          foreach ($item in $ordered) {
+          "Total packages discovered: $totalCount" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "Shard: $shardIndex / $shardCount" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "Shard start index: $start" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "Packages selected in this run: $($selected.Count)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          foreach ($item in $selected) {
             "- $($item.package) (level=$($item.level), direct_deps=$($item.direct_dependencies))" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           }
 
