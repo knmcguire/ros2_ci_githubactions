@@ -99,7 +99,24 @@ jobs:
       - name: Generate colcon dependency graph
         shell: powershell
         run: |
-          pixi run --manifest-path C:\pixi_ws\pixi.toml --frozen colcon graph --base-paths C:\graph_ws\src --dot > C:\graph_ws\graph.dot
+          $graphFile = 'C:\graph_ws\graph.dot'
+          $graphOutput = pixi run --manifest-path C:\pixi_ws\pixi.toml --frozen colcon graph --base-paths C:\graph_ws\src --dot
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "colcon graph failed with exit code $LASTEXITCODE"
+            exit $LASTEXITCODE
+          }
+          if (-not $graphOutput) {
+            Write-Error 'colcon graph produced no DOT output.'
+            exit 1
+          }
+          $graphOutput | Out-File -FilePath $graphFile -Encoding ascii -Force
+          if (-not (Test-Path $graphFile)) {
+            Write-Error "Graph file was not created: $graphFile"
+            exit 1
+          }
+          $graphSize = (Get-Item $graphFile).Length
+          Write-Host "DOT graph saved to $graphFile ($graphSize bytes)"
+          Get-Content $graphFile -TotalCount 5 | ForEach-Object { Write-Host $_ }
 
       - name: Convert graph to ordered matrix
         id: graph_to_matrix
@@ -107,6 +124,8 @@ jobs:
         run: |
           $graphFile = 'C:\graph_ws\graph.dot'
           if (-not (Test-Path $graphFile)) {
+            Write-Host 'Contents of C:\graph_ws for debugging:'
+            Get-ChildItem -Path C:\graph_ws -Force -Recurse -ErrorAction SilentlyContinue | Select-Object -First 100 | ForEach-Object { Write-Host $_.FullName }
             Write-Error "Graph file not found: $graphFile"
             exit 1
           }
