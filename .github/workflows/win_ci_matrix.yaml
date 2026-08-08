@@ -289,7 +289,7 @@ jobs:
 
     env:
       ROS_DOMAIN_ID: 1
-      WS_PATH: ${{ github.workspace }}\ws
+      WS_PATH: C:\w\ws
       PACKAGE_NAME: ${{ matrix.package }}
 
     steps:
@@ -406,9 +406,10 @@ jobs:
           )
           set "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=%MSVC_LINK%"
           set "PACKAGE_FILTER_ARGS= --build-args --packages-above-and-dependencies %PACKAGE_NAME% --test-args --packages-above %PACKAGE_NAME%"
-          cd /d "%GITHUB_WORKSPACE%\ci"
+          if not exist C:\w md C:\w
+          cd /d C:\w
           echo Running package: %PACKAGE_NAME%
-          pixi run --manifest-path C:\pixi_ws\pixi.toml --frozen python run_ros2_batch.py %CI_ARGS%%PACKAGE_FILTER_ARGS%
+          pixi run --manifest-path C:\pixi_ws\pixi.toml --frozen python "%GITHUB_WORKSPACE%\ci\run_ros2_batch.py" %CI_ARGS%%PACKAGE_FILTER_ARGS% --workspace-path C:\w\ws
 
   dispatch-next-shard:
     needs: windows-ci-matrix

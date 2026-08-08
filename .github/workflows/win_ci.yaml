@@ -42,7 +42,7 @@ jobs:
     timeout-minutes: 350
     env:
       ROS_DOMAIN_ID: 1
-      WS_PATH: ${{ github.workspace }}\ws
+      WS_PATH: C:\w\ws
       CI_ARGS: ${{ inputs.ci_args || '--force-ansi-color --ignore-rmw rmw_fastrtps_dynamic_cpp rmw_connextdds --repo-file-url https://raw.githubusercontent.com/ros2/ros2/rolling/ros2.repos --colcon-mixin-url https://raw.githubusercontent.com/colcon/colcon-mixin-repository/master/index.yaml --cmake-build-type Release --visual-studio-version 2022 --build-args --event-handlers console_cohesion+ console_package_list+ --cmake-args -DINSTALL_EXAMPLES=OFF -DSECURITY=ON -DAPPEND_PROJECT_NAME_TO_INCLUDEDIR=ON --test-args --event-handlers console_cohesion+ --executor sequential --retest-until-pass 2 --ctest-args -LE xfail --pytest-args -m "not xfail"' }}
 
     steps:
@@ -181,9 +181,10 @@ jobs:
           echo VisualStudioVersion=%VisualStudioVersion%
           echo MSVC_LINK=%MSVC_LINK%
           set "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=%MSVC_LINK%"
-          cd /d "%GITHUB_WORKSPACE%\ci"
+          if not exist C:\w md C:\w
+          cd /d C:\w
           set "PACKAGE_FILTER_ARGS="
           if not "%PACKAGE_NAME%"=="" (
             set "PACKAGE_FILTER_ARGS= --build-args --packages-above-and-dependencies %PACKAGE_NAME% --test-args --packages-above %PACKAGE_NAME%"
           )
-          pixi run --manifest-path C:\pixi_ws\pixi.toml --frozen python run_ros2_batch.py %CI_ARGS%%PACKAGE_FILTER_ARGS%
+          pixi run --manifest-path C:\pixi_ws\pixi.toml --frozen python "%GITHUB_WORKSPACE%\ci\run_ros2_batch.py" %CI_ARGS%%PACKAGE_FILTER_ARGS% --workspace-path C:\w\ws
