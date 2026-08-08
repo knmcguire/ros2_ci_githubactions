@@ -1,0 +1,176 @@
+name: Windows CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      ros_distro:
+        description: ROS 2 distribution (matches a branch on ros2/ros2)
+        default: rolling
+        type: string
+      ci_args:
+        description: Arguments passed to run_ros2_batch.py
+        default: >-
+          --force-ansi-color
+          --ignore-rmw rmw_fastrtps_dynamic_cpp rmw_connextdds
+          --repo-file-url https://raw.githubusercontent.com/ros2/ros2/rolling/ros2.repos
+          --colcon-mixin-url https://raw.githubusercontent.com/colcon/colcon-mixin-repository/master/index.yaml
+          --cmake-build-type Release
+          --visual-studio-version 2022
+          --build-args --event-handlers console_cohesion+ console_package_list+
+          --cmake-args -DINSTALL_EXAMPLES=OFF -DSECURITY=ON -DAPPEND_PROJECT_NAME_TO_INCLUDEDIR=ON
+          --test-args --event-handlers console_cohesion+
+          --executor sequential
+          --retest-until-pass 2 --ctest-args -LE xfail --pytest-args -m "not xfail"
+        type: string
+
+env:
+  ROS_DISTRO: ${{ inputs.ros_distro || 'rolling' }}
+  PIXI_VERSION: v0.41.0
+  PIXI_SHA256: 16b1b83f2d6f04a990ef7c6eea2bb45d2e846d122be312ca3f5f1b14be7cdc6d
+
+jobs:
+  windows-ci:
+    runs-on: windows-2025
+    timeout-minutes: 350
+    env:
+      ROS_DOMAIN_ID: 1
+      WS_PATH: ${{ github.workspace }}\ws
+      CI_ARGS: ${{ inputs.ci_args || '--force-ansi-color --ignore-rmw rmw_fastrtps_dynamic_cpp rmw_connextdds --repo-file-url https://raw.githubusercontent.com/ros2/ros2/rolling/ros2.repos --colcon-mixin-url https://raw.githubusercontent.com/colcon/colcon-mixin-repository/master/index.yaml --cmake-build-type Release --visual-studio-version 2022 --build-args --event-handlers console_cohesion+ console_package_list+ --cmake-args -DINSTALL_EXAMPLES=OFF -DSECURITY=ON -DAPPEND_PROJECT_NAME_TO_INCLUDEDIR=ON --test-args --event-handlers console_cohesion+ --executor sequential --retest-until-pass 2 --ctest-args -LE xfail --pytest-args -m "not xfail"' }}
+
+    steps:
+      - name: Checkout ci repository
+        uses: actions/checkout@v4
+
+      - name: Enable long paths
+        shell: powershell
+        run: |
+          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' `
+            -Name 'LongPathsEnabled' -Value 1 -PropertyType DWORD -Force
+
+
+      - name: Install Visual Studio 2022 build tools
+        shell: powershell
+        run: |
+          irm https://aka.ms/vs/17/release/vs_buildtools.exe -OutFile vs_buildtools_2022.exe
+          $vsArgs = @(
+            '--quiet','--wait','--norestart','--nocache',
+            '--installPath','C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools',
+            '--add','Microsoft.Component.MSBuild',
+            '--add','Microsoft.Net.Component.4.6.1.TargetingPack',
+            '--add','Microsoft.Net.Component.4.8.SDK',
+            '--add','Microsoft.VisualStudio.Component.CoreBuildTools',
+            '--add','Microsoft.VisualStudio.Component.Roslyn.Compiler',
+            '--add','Microsoft.VisualStudio.Component.TextTemplating',
+            '--add','Microsoft.VisualStudio.Component.VC.CLI.Support',
+            '--add','Microsoft.VisualStudio.Component.VC.CoreBuildTools',
+            '--add','Microsoft.VisualStudio.Component.VC.CoreIde',
+            '--add','Microsoft.VisualStudio.Component.VC.Redist.14.Latest',
+            '--add','Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
+            '--add','Microsoft.VisualStudio.Component.Windows10SDK',
+            '--add','Microsoft.VisualStudio.Component.Windows10SDK.19041',
+            '--add','Microsoft.VisualStudio.ComponentGroup.NativeDesktop.Core',
+            '--add','Microsoft.VisualStudio.Workload.MSBuildTools',
+            '--add','Microsoft.VisualStudio.Workload.VCTools'
+          )
+          $p = Start-Process -FilePath .\vs_buildtools_2022.exe -ArgumentList $vsArgs -Wait -PassThru -NoNewWindow
+          if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) {
+            Write-Error "VS build tools install failed with exit code $($p.ExitCode)"
+            exit $p.ExitCode
+          }
+          if ($p.ExitCode -eq 3010) {
+            Write-Host "Installer returned 3010 (reboot required to finalize)."
+          }
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $inst = & $vswhere -products * -version "[17.0,18.0)" `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
+          if (-not $inst) {
+            Write-Host "No complete VS 2022 instance found. Full catalog state (incl. incomplete):"
+            & $vswhere -all -prerelease -products * `
+              -property installationName -property installationVersion -property isComplete -property isLaunchable
+            Write-Error "Visual Studio 2022 is not properly installed (no complete instance with the C++ toolset). Failing before the build."
+            exit 1
+          }
+          Write-Host "Verified complete VS 2022 instance: $inst"
+
+      - name: Install pixi (pinned + checksum verified)
+        shell: powershell
+        run: |
+          $url = "https://github.com/prefix-dev/pixi/releases/download/$env:PIXI_VERSION/pixi-x86_64-pc-windows-msvc.zip"
+          irm $url -OutFile pixi-x86_64-pc-windows-msvc.zip
+          $hash = (Get-FileHash pixi-x86_64-pc-windows-msvc.zip -Algorithm SHA256).Hash
+          if ($hash -ne $env:PIXI_SHA256) {
+            Write-Error "pixi checksum mismatch: got $hash expected $env:PIXI_SHA256"
+            exit 1
+          }
+          $bindir = Join-Path $Env:USERPROFILE ".pixi\bin"
+          Expand-Archive -Path pixi-x86_64-pc-windows-msvc.zip -DestinationPath $bindir -Force
+          # Persist on PATH for subsequent steps.
+          Add-Content -Path $env:GITHUB_PATH -Value $bindir
+
+      - name: Fetch pixi.toml for ROS distro
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path C:\pixi_ws | Out-Null
+          $url = "https://raw.githubusercontent.com/ros2/ros2/refs/heads/$env:ROS_DISTRO/pixi.toml"
+          if (-not $url.StartsWith('https://')) { Write-Error 'URL must use HTTPS'; exit 1 }
+          irm $url -OutFile C:\pixi_ws\pixi.toml
+
+      - name: Install pixi dependencies
+        shell: powershell
+        working-directory: C:\pixi_ws
+        run: |
+          pixi --color never --no-progress -q install
+          pixi --color never --no-progress -q list
+
+      - name: Ensure colcon-ros-domain-id-coordinator
+        shell: powershell
+        working-directory: C:\pixi_ws
+        run: |
+          pixi --color never --no-progress -q run `
+            "pip install 'colcon-ros-domain-id-coordinator >= 0.2.3'"
+
+      - name: Locate Visual Studio 2022
+        shell: powershell
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) { Write-Error "vswhere.exe not found"; exit 1 }
+          $vsRoot = & $vswhere -products * -version '[17.0,18.0)' -latest -property installationPath
+          if (-not $vsRoot) { Write-Error "No Visual Studio 2022 (17.x) instance found"; exit 1 }
+          $vcvars = Join-Path $vsRoot 'VC\Auxiliary\Build\vcvars64.bat'
+          if (-not (Test-Path $vcvars)) { Write-Error "vcvars64.bat not found under $vsRoot"; exit 1 }
+          Write-Host "Found Visual Studio at: $vsRoot"
+          "VCVARS64=$vcvars" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          $clHostDir = Get-ChildItem -Path (Join-Path $vsRoot 'VC\Tools\MSVC') -Recurse -Filter cl.exe -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\Hostx64\\x64\\cl.exe$' } |
+            Select-Object -First 1 | ForEach-Object { $_.DirectoryName }
+          if (-not $clHostDir) { Write-Error "Could not find Hostx64\x64 bin dir under $vsRoot"; exit 1 }
+          $junction = 'C:\msvcbin'
+          if (Test-Path $junction) { cmd /c rmdir "$junction" 2>$null }
+          New-Item -ItemType Junction -Path $junction -Target $clHostDir | Out-Null
+          $linkViaJunction = 'C:/msvcbin/link.exe'
+          if (-not (Test-Path $linkViaJunction)) { Write-Error "link.exe not reachable via junction $junction"; exit 1 }
+          Write-Host "MSVC bin dir : $clHostDir"
+          Write-Host "linker       : $linkViaJunction"
+          "MSVC_LINK=$linkViaJunction" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Run ROS 2 batch job
+        shell: cmd
+        run: |
+          call "%VCVARS64%"
+          if errorlevel 1 (
+            echo ERROR: vcvars64.bat failed.
+            exit /b 1
+          )
+          if not defined VisualStudioVersion (
+            echo ERROR: VisualStudioVersion is still not set after sourcing vcvars.
+            exit /b 1
+          )
+          echo VisualStudioVersion=%VisualStudioVersion%
+          echo MSVC_LINK=%MSVC_LINK%
+          set "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=%MSVC_LINK%"
+          pixi run --manifest-path C:\pixi_ws\pixi.toml --frozen python run_ros2_batch.py %CI_ARGS%
