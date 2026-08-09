@@ -14,6 +14,10 @@ on:
         description: Optional package name to scope build/test (for example, rclcpp)
         default: ''
         type: string
+      only_fixes_test:
+        description: Use shorter single-package mode like ros-ci-for-pr --only-fixes-test
+        default: false
+        type: boolean
       ci_args:
         description: Arguments passed to run_ros2_batch.py
         default: >-
@@ -33,6 +37,7 @@ on:
 env:
   ROS_DISTRO: ${{ inputs.ros_distro || 'rolling' }}
   PACKAGE_NAME: ${{ inputs.package_name || '' }}
+  ONLY_FIXES_TEST: ${{ inputs.only_fixes_test || false }}
   PIXI_VERSION: v0.41.0
   PIXI_SHA256: 16b1b83f2d6f04a990ef7c6eea2bb45d2e846d122be312ca3f5f1b14be7cdc6d
 
@@ -185,7 +190,14 @@ jobs:
           cd /d C:\w
           set "RUN_ARGS=%CI_ARGS%"
           if not "%PACKAGE_NAME%"=="" (
-            set "RUN_ARGS=%RUN_ARGS:--build-args=--build-args --packages-above-and-dependencies %PACKAGE_NAME%%"
-            set "RUN_ARGS=%RUN_ARGS:--test-args=--test-args --packages-above %PACKAGE_NAME%%"
+            if /i "%ONLY_FIXES_TEST%"=="true" (
+              echo Package mode: only_fixes_test
+              set "RUN_ARGS=%RUN_ARGS:--build-args=--build-args --packages-up-to %PACKAGE_NAME%%"
+              set "RUN_ARGS=%RUN_ARGS:--test-args=--test-args --packages-select %PACKAGE_NAME%%"
+            ) else (
+              echo Package mode: impact scope
+              set "RUN_ARGS=%RUN_ARGS:--build-args=--build-args --packages-above-and-dependencies %PACKAGE_NAME%%"
+              set "RUN_ARGS=%RUN_ARGS:--test-args=--test-args --packages-above %PACKAGE_NAME%%"
+            )
           )
           pixi run --manifest-path C:\pixi_ws\pixi.toml --frozen python "%GITHUB_WORKSPACE%\ci\run_ros2_batch.py" %RUN_ARGS% --workspace-path C:\w\ws
