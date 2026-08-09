@@ -183,8 +183,9 @@ jobs:
           set "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=%MSVC_LINK%"
           if not exist C:\w md C:\w
           cd /d C:\w
-          set "PACKAGE_FILTER_ARGS="
+          set "RUN_ARGS=%CI_ARGS%"
           if not "%PACKAGE_NAME%"=="" (
-            set "PACKAGE_FILTER_ARGS= --build-args --packages-above-and-dependencies %PACKAGE_NAME% --test-args --packages-above %PACKAGE_NAME%"
+            set "RUN_ARGS=%RUN_ARGS:--build-args=--build-args --packages-above-and-dependencies %PACKAGE_NAME%%"
+            set "RUN_ARGS=%RUN_ARGS:--test-args=--test-args --packages-above %PACKAGE_NAME%%"
           )
-          pixi run --manifest-path C:\pixi_ws\pixi.toml --frozen python "%GITHUB_WORKSPACE%\ci\run_ros2_batch.py" %CI_ARGS%%PACKAGE_FILTER_ARGS% --workspace-path C:\w\ws
+          pixi run --manifest-path C:\pixi_ws\pixi.toml --frozen python "%GITHUB_WORKSPACE%\ci\run_ros2_batch.py" %RUN_ARGS% --workspace-path C:\w\ws
