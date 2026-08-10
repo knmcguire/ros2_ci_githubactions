@@ -171,6 +171,24 @@ jobs:
           Write-Host "linker       : $linkViaJunction"
           "MSVC_LINK=$linkViaJunction" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
+      - name: Compose run arguments
+        shell: powershell
+        run: |
+          $runArgs = $env:CI_ARGS
+          if (-not [string]::IsNullOrWhiteSpace($env:PACKAGE_NAME)) {
+            if ($env:ONLY_FIXES_TEST -eq 'true') {
+              Write-Host 'Package mode: only_fixes_test'
+              $runArgs = $runArgs -replace '--build-args', "--build-args --packages-up-to $env:PACKAGE_NAME"
+              $runArgs = $runArgs -replace '--test-args', "--test-args --packages-select $env:PACKAGE_NAME"
+            } else {
+              Write-Host 'Package mode: impact scope'
+              $runArgs = $runArgs -replace '--build-args', "--build-args --packages-above-and-dependencies $env:PACKAGE_NAME"
+              $runArgs = $runArgs -replace '--test-args', "--test-args --packages-above $env:PACKAGE_NAME"
+            }
+          }
+          "RUN_ARGS=$runArgs" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Composed RUN_ARGS"
+
       - name: Run ROS 2 batch job
         shell: cmd
         run: |
@@ -188,16 +206,4 @@ jobs:
           set "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=%MSVC_LINK%"
           if not exist C:\w md C:\w
           cd /d C:\w
-          set "RUN_ARGS=%CI_ARGS%"
-          if not "%PACKAGE_NAME%"=="" (
-            if /i "%ONLY_FIXES_TEST%"=="true" (
-              echo Package mode: only_fixes_test
-              set "RUN_ARGS=%RUN_ARGS:--build-args=--build-args --packages-up-to %PACKAGE_NAME%%"
-              set "RUN_ARGS=%RUN_ARGS:--test-args=--test-args --packages-select %PACKAGE_NAME%%"
-            ) else (
-              echo Package mode: impact scope
-              set "RUN_ARGS=%RUN_ARGS:--build-args=--build-args --packages-above-and-dependencies %PACKAGE_NAME%%"
-              set "RUN_ARGS=%RUN_ARGS:--test-args=--test-args --packages-above %PACKAGE_NAME%%"
-            )
-          )
           pixi run --manifest-path C:\pixi_ws\pixi.toml --frozen python "%GITHUB_WORKSPACE%\ci\run_ros2_batch.py" %RUN_ARGS% --workspace-path C:\w\ws

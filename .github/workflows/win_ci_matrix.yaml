@@ -397,6 +397,22 @@ jobs:
           if (-not (Test-Path $linkViaJunction)) { Write-Error "link.exe not reachable via junction $junction"; exit 1 }
           "MSVC_LINK=$linkViaJunction" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
+      - name: Compose run arguments
+        shell: powershell
+        run: |
+          $runArgs = $env:CI_ARGS
+          if ($env:ONLY_FIXES_TEST -eq 'true') {
+            Write-Host 'Package mode: only_fixes_test'
+            $runArgs = $runArgs -replace '--build-args', "--build-args --packages-up-to $env:PACKAGE_NAME"
+            $runArgs = $runArgs -replace '--test-args', "--test-args --packages-select $env:PACKAGE_NAME"
+          } else {
+            Write-Host 'Package mode: impact scope'
+            $runArgs = $runArgs -replace '--build-args', "--build-args --packages-above-and-dependencies $env:PACKAGE_NAME"
+            $runArgs = $runArgs -replace '--test-args', "--test-args --packages-above $env:PACKAGE_NAME"
+          }
+          "RUN_ARGS=$runArgs" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Composed RUN_ARGS for $env:PACKAGE_NAME"
+
       - name: Run ROS 2 batch job for matrix package
         shell: cmd
         run: |
@@ -410,16 +426,6 @@ jobs:
             exit /b 1
           )
           set "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=%MSVC_LINK%"
-          set "RUN_ARGS=%CI_ARGS%"
-          if /i "%ONLY_FIXES_TEST%"=="true" (
-            echo Package mode: only_fixes_test
-            set "RUN_ARGS=%RUN_ARGS:--build-args=--build-args --packages-up-to %PACKAGE_NAME%%"
-            set "RUN_ARGS=%RUN_ARGS:--test-args=--test-args --packages-select %PACKAGE_NAME%%"
-          ) else (
-            echo Package mode: impact scope
-            set "RUN_ARGS=%RUN_ARGS:--build-args=--build-args --packages-above-and-dependencies %PACKAGE_NAME%%"
-            set "RUN_ARGS=%RUN_ARGS:--test-args=--test-args --packages-above %PACKAGE_NAME%%"
-          )
           if not exist C:\w md C:\w
           cd /d C:\w
           echo Running package: %PACKAGE_NAME%
