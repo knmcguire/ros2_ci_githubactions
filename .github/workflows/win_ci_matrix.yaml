@@ -401,17 +401,40 @@ jobs:
         shell: powershell
         run: |
           $runArgs = $env:CI_ARGS
-          if ($env:ONLY_FIXES_TEST -eq 'true') {
+          $onlyFixesTest = "$env:ONLY_FIXES_TEST".ToLower() -eq 'true'
+          if ($onlyFixesTest) {
             Write-Host 'Package mode: only_fixes_test'
-            $runArgs = $runArgs -replace '--build-args', "--build-args --packages-up-to $env:PACKAGE_NAME"
-            $runArgs = $runArgs -replace '--test-args', "--test-args --packages-select $env:PACKAGE_NAME"
+            $buildSelector = "--packages-up-to $env:PACKAGE_NAME"
+            $testSelector = "--packages-select $env:PACKAGE_NAME"
           } else {
             Write-Host 'Package mode: impact scope'
-            $runArgs = $runArgs -replace '--build-args', "--build-args --packages-above-and-dependencies $env:PACKAGE_NAME"
-            $runArgs = $runArgs -replace '--test-args', "--test-args --packages-above $env:PACKAGE_NAME"
+            $buildSelector = "--packages-above-and-dependencies $env:PACKAGE_NAME"
+            $testSelector = "--packages-above $env:PACKAGE_NAME"
           }
+
+          if ($runArgs -match '--build-args') {
+            if ($runArgs -notmatch [regex]::Escape($buildSelector)) {
+              $runArgs = $runArgs -replace '--build-args', "--build-args $buildSelector"
+            }
+          } else {
+            $runArgs += " --build-args $buildSelector"
+          }
+
+          if ($runArgs -match '--test-args') {
+            if ($runArgs -notmatch [regex]::Escape($testSelector)) {
+              $runArgs = $runArgs -replace '--test-args', "--test-args $testSelector"
+            }
+          } else {
+            $runArgs += " --test-args $testSelector"
+          }
+
+          if ($runArgs -notmatch [regex]::Escape($buildSelector) -or $runArgs -notmatch [regex]::Escape($testSelector)) {
+            Write-Error "Failed to compose package selectors for $env:PACKAGE_NAME. RUN_ARGS=$runArgs"
+            exit 1
+          }
+
           "RUN_ARGS=$runArgs" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "Composed RUN_ARGS for $env:PACKAGE_NAME"
+          Write-Host "Composed RUN_ARGS for $env:PACKAGE_NAME: $runArgs"
 
       - name: Run ROS 2 batch job for matrix package
         shell: cmd
